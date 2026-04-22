@@ -83,7 +83,7 @@ async function fetchPageDetails(url) {
     }
 
     // Cap at 500 chars for the preview
-    if (body.length > 500) body = body.slice(0, 500) + '…';
+    if (body.length > 500) body = body.slice(0, 800) + '…';
 
     return { body, image_url };
   } catch {

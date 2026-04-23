@@ -2,8 +2,12 @@
   "name": "upsa-scraper",
   "version": "1.0.0",
   "type": "module",
+  "description": "Scrapes UPSA website for announcements, hostel notices, and fee deadlines. Sends push notification reminders via Expo.",
   "scripts": {
-    "scrape": "node scraper.js"
+    "scrape:announcements": "node scraper.js",
+    "scrape:hostel": "node scrapers/hostel-notices.js",
+    "scrape:fees": "node scrapers/fee-deadlines.js",
+    "notify:reminders": "node notifications/send-reminders.js"
   },
   "dependencies": {
     "axios": "^1.6.0",

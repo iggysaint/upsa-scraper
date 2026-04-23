@@ -1,0 +1,30 @@
+name: Fee Deadline Reminders
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # daily at 7am UTC (10am Ghana time)
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Write Firebase service account key
+        run: echo '${{ secrets.FIREBASE_KEY }}' > serviceAccountKey.json
+
+      - name: Send reminders
+        run: node notifications/send-reminders.js
+
+      - name: Clean up key
+        run: rm serviceAccountKey.json

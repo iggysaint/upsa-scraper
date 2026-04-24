@@ -1,0 +1,30 @@
+name: Weekly Club Spotlight
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # every Monday at 6am UTC (9am Ghana time)
+  workflow_dispatch:       # run manually anytime from GitHub
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Write Firebase service account key
+        run: echo '${{ secrets.FIREBASE_KEY }}' > serviceAccountKey.json
+
+      - name: Run club spotlight rotation
+        run: node scripts/rotate-club-spotlight.js
+
+      - name: Clean up key
+        run: rm serviceAccountKey.json

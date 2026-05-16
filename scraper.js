@@ -33,24 +33,41 @@ function detectCategory(title) {
   return 'academic';
 }
 
-// Fetch body text AND image from individual announcement page
+// ── Fetch body text AND image from individual announcement page ───────────────
 async function fetchPageDetails(url) {
   try {
     const { data } = await axios.get(url, { timeout: 10000 });
     const $ = cheerio.load(data);
 
-    // ── Image — grab the featured image src ──────────────────────────────────
-    // UPSA pages have an <img> right at the top of the post content
-    let image_url = '';
-    const featuredImg = $('.jeg_featured img, .post-image img, article img, .entry-content img').first();
-    if (featuredImg.length) {
-      image_url = featuredImg.attr('src') || featuredImg.attr('data-src') || '';
+    // ── Image — use og:image first (always the correct featured image) ────────
+    let image_url = $('meta[property="og:image"]').attr('content') || '';
+
+    // Fallback — try twitter:image
+    if (!image_url) {
+      image_url = $('meta[name="twitter:image"]').attr('content') || '';
     }
-    // Fallback — grab first img inside the article that isn't the logo
+
+    // Fallback — try the jeg_featured / post-image selectors
+    if (!image_url) {
+      const featuredImg = $('.jeg_featured img, .post-thumbnail img, .wp-post-image').first();
+      if (featuredImg.length) {
+        image_url = featuredImg.attr('src') || featuredImg.attr('data-src') || '';
+      }
+    }
+
+    // Last resort — first wp-content upload image that isn't logo/avatar/icon
     if (!image_url) {
       $('img').each((i, el) => {
-        const src = $(el).attr('src') || '';
-        if (src && !src.includes('upsa-logo') && !src.includes('avatar') && src.startsWith('http')) {
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        if (
+          src &&
+          src.includes('/wp-content/uploads/') &&
+          !src.includes('logo') &&
+          !src.includes('avatar') &&
+          !src.includes('icon') &&
+          !src.includes('cropped') &&
+          src.startsWith('http')
+        ) {
           image_url = src;
           return false; // break
         }
@@ -58,10 +75,8 @@ async function fetchPageDetails(url) {
     }
 
     // ── Body text ─────────────────────────────────────────────────────────────
-    // Remove nav, header, footer, scripts before extracting text
     $('nav, header, footer, script, style, .jeg_header, .jeg_footer, .jeg_navigation').remove();
 
-    // Try common WordPress content selectors
     let body = '';
     const selectors = ['.entry-content', '.jeg_post_content', '.post-content', 'article .content', '.single-content'];
     for (const sel of selectors) {
@@ -72,7 +87,6 @@ async function fetchPageDetails(url) {
       }
     }
 
-    // Fallback — grab paragraphs inside article
     if (!body || body.length < 50) {
       const paragraphs = [];
       $('article p, .post p').each((i, el) => {
@@ -82,8 +96,7 @@ async function fetchPageDetails(url) {
       body = paragraphs.join(' ');
     }
 
-    // Cap at 500 chars for the preview
-    if (body.length > 500) body = body.slice(0, 800) + '…';
+    if (body.length > 800) body = body.slice(0, 800) + '…';
 
     return { body, image_url };
   } catch {
@@ -134,7 +147,6 @@ async function pushToFirebase() {
     const existing = await ref.get();
 
     if (existing.exists) {
-      // If body is empty on existing doc, try to fill it in
       const existingData = existing.data();
       if (!existingData.body || existingData.body.length < 10) {
         console.log(`🔄 Updating body for: ${a.title.slice(0, 50)}...`);
@@ -147,7 +159,6 @@ async function pushToFirebase() {
       continue;
     }
 
-    // New announcement — fetch full details
     console.log(`📄 Fetching details for: ${a.title.slice(0, 50)}...`);
     const { body, image_url } = await fetchPageDetails(a.link);
 

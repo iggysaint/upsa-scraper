@@ -12,7 +12,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// ── Sources — each gets its own category in Firestore ────────────────────────
+// ── Sources ───────────────────────────────────────────────────────────────────
 const SOURCES = [
   { url: 'https://upsa.edu.gh/news/',     category: 'news'     },
   { url: 'https://upsa.edu.gh/opinions/', category: 'opinions' },
@@ -23,28 +23,48 @@ function cleanText(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+// ── Fetch body + image from individual article page ───────────────────────────
 async function fetchPageDetails(url) {
   try {
     const { data } = await axios.get(url, { timeout: 10000 });
     const $ = cheerio.load(data);
 
-    // Image
-    let image_url = '';
-    const featuredImg = $('.jeg_featured img, .post-image img, article img, .entry-content img').first();
-    if (featuredImg.length) {
-      image_url = featuredImg.attr('src') || featuredImg.attr('data-src') || '';
+    // ── Image — og:image is always the correct featured image on UPSA pages ──
+    let image_url = $('meta[property="og:image"]').attr('content') || '';
+
+    // Fallback — twitter:image
+    if (!image_url) {
+      image_url = $('meta[name="twitter:image"]').attr('content') || '';
     }
+
+    // Fallback — WordPress featured image classes
+    if (!image_url) {
+      const featuredImg = $('.jeg_featured img, .post-thumbnail img, .wp-post-image').first();
+      if (featuredImg.length) {
+        image_url = featuredImg.attr('src') || featuredImg.attr('data-src') || '';
+      }
+    }
+
+    // Last resort — first wp-content/uploads image that isn't a logo/icon
     if (!image_url) {
       $('img').each((i, el) => {
-        const src = $(el).attr('src') || '';
-        if (src && !src.includes('upsa-logo') && !src.includes('avatar') && src.startsWith('http')) {
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        if (
+          src &&
+          src.includes('/wp-content/uploads/') &&
+          !src.includes('logo') &&
+          !src.includes('avatar') &&
+          !src.includes('icon') &&
+          !src.includes('cropped') &&
+          src.startsWith('http')
+        ) {
           image_url = src;
-          return false;
+          return false; // break
         }
       });
     }
 
-    // Body text
+    // ── Body text ─────────────────────────────────────────────────────────────
     $('nav, header, footer, script, style, .jeg_header, .jeg_footer, .jeg_navigation').remove();
 
     let body = '';

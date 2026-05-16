@@ -2,8 +2,8 @@ name: Scrape UPSA News & Opinions
 
 on:
   schedule:
-    - cron: '0 6,12,18 * * *'   # Runs at 6am, 12pm, 6pm UTC daily
-  workflow_dispatch:              # Also allows manual trigger from GitHub
+    - cron: '0 */3 * * *'   # runs every 3 hours
+  workflow_dispatch:          # lets you run it manually from GitHub
 
 jobs:
   scrape:
@@ -11,22 +11,21 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies
         run: npm install
 
       - name: Write Firebase service account key
-        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}' > serviceAccountKey.json
+        run: echo '${{ secrets.FIREBASE_KEY }}' > serviceAccountKey.json
 
       - name: Run news & opinions scraper
         run: node scrapers/news-opinions.js
 
-      - name: Clean up service account key
-        if: always()
-        run: rm -f serviceAccountKey.json
+      - name: Clean up key
+        run: rm serviceAccountKey.json

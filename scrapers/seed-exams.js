@@ -1,0 +1,249 @@
+import admin from 'firebase-admin';
+import { readFileSync } from 'fs';
+
+const serviceAccount = JSON.parse(readFileSync('./serviceAccountKey.json', 'utf8'));
+if (!admin.apps.length) {
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+}
+const db = admin.firestore();
+
+function parseCourseCode(code) {
+  const primary = code.split('/')[0].trim();
+  const match = primary.match(/^([A-Z]+)(\d)(\d{2})$/);
+  if (!match) return { programme: primary.slice(0, 4), level: 0 };
+  return { programme: match[1], level: parseInt(match[2]) * 100 };
+}
+
+const EXAMS = [
+  // 1st June 2026 — Monday
+  { course_code: 'BBBA404',  course_name: 'Total Quality Management',                              date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF416',  course_name: 'Money, Banking and Financial Markets',                  date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACT402',  course_name: 'Corporate Reporting II',                                date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BMKT404',  course_name: 'Tourism Marketing',                                     date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BATL304',  course_name: 'Freight Forwarding Operations',                         date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BATL202',  course_name: 'Principles of Transport Management',                    date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF408',  course_name: 'Bank Management',                                       date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'DIPA054',  course_name: 'Audit and Internal Review',                             date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BITM306',  course_name: 'IT Sourcing and Procurement',                           date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR408',  course_name: 'Events Management & Protocol',                          date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BSIT306',  course_name: 'IT Strategy & Policy',                                  date: '2026-06-01', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA306',  course_name: 'Company and Partnership Law',                           date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC316',  course_name: 'Actuarial Models',                                      date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC402',  course_name: 'Advanced Macroeconomics',                               date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BMKT308',  course_name: 'Digital Marketing',                                     date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF304',  course_name: 'Real Estate Economics',                                 date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR308',  course_name: 'Media Relations',                                       date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC206',  course_name: 'Statistics for Economists',                             date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF312',  course_name: 'Financial Risk Management and Insurance',               date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC206',  course_name: 'Life Contingency',                                      date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BITM402',  course_name: 'Professional Computing Practice',                       date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPT052',  course_name: 'Essentials of IT Project Management',                   date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPR052',  course_name: 'Events Management',                                     date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BCPC118',  course_name: 'Economics for Business',                                date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPC054',  course_name: 'Introduction to Environmental Management',              date: '2026-06-01', start_time: '13:30', end_time: '17:00' },
+  // 2nd June 2026 — Tuesday
+  { course_code: 'BCPC202',  course_name: 'Global Dimension of Business',                          date: '2026-06-02', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS204',  course_name: 'Digital Media Production',                              date: '2026-06-02', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BRMF402',  course_name: 'Real Estate Marketing & Brokerage',                    date: '2026-06-02', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BPRM202',  course_name: 'Organizational Behaviour',                              date: '2026-06-02', start_time: '13:30', end_time: '17:00' },
+  // 3rd June 2026 — Wednesday
+  { course_code: 'BACT408',  course_name: 'Performance Management',                                date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BSIT202',  course_name: 'Computer Hardware Systems',                             date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR414',  course_name: 'Indigenous Communication',                              date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR212',  course_name: 'Mass Media and Society',                                date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BCPC218',  course_name: 'Introduction to Computer Technology',                   date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF422',  course_name: 'Micro Finance Management',                              date: '2026-06-03', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BITM412',  course_name: 'Mobile Web Development',                                date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BCPC206',  course_name: 'Introduction to Total Quality Management',              date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC208',  course_name: 'Elements of Macroeconomics',                            date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPA056',  course_name: 'Financial Accounting II',                               date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BCPC102',  course_name: 'Principles of Economics II (Macro)',                    date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPG052',  course_name: 'Project Management',                                    date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC406',  course_name: 'Data & Machine Learning',                               date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC412',  course_name: 'Energy Economics',                                      date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPK052',  course_name: 'Brands Management',                                     date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBBA408',  course_name: 'Environmental Management',                              date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPT054',  course_name: 'Networking Development and Management',                 date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPR054',  course_name: 'Digital Media in Public Relations',                     date: '2026-06-03', start_time: '13:30', end_time: '17:00' },
+  // 4th June 2026 — Thursday
+  { course_code: 'BASC302',  course_name: 'Pension Planning & Administration',                     date: '2026-06-04', start_time: '09:30', end_time: '13:00' },
+  // 5th June 2026 — Friday
+  { course_code: 'BACT312',  course_name: 'Management Accounting for Business',                    date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA402',  course_name: 'International Human Resources Management',              date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BCPC204',  course_name: 'Principles of Accounting (Non Accounting Students)',    date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BMKT302',  course_name: 'Marketing Research',                                    date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BMKT406',  course_name: 'Marketing of Financial Service',                        date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS202',  course_name: 'Media & Communication Regulatory Institutions',         date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BAAF302',  course_name: 'Cost and Management Accounting',                        date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF404',  course_name: 'Money and Capital Markets',                             date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BITM202',  course_name: 'Operating Systems',                                     date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS302',  course_name: 'Communication Research',                                date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'DIPK058',  course_name: 'Sales Management',                                      date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BSIT206',  course_name: 'Electronic Business',                                   date: '2026-06-05', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC308',  course_name: 'Financial Economics',                                   date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BITM408',  course_name: 'Software Quality Management',                           date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BAAF202',  course_name: 'Principles of Accounting II',                           date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BACT314',  course_name: 'Cost and Management Accounting II',                     date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR406',  course_name: 'Development Communication',                             date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BPRM208',  course_name: 'Multimedia Writing for Public Relation',                date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF308',  course_name: 'Fundamentals of Building Construction and Management',  date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC412',  course_name: 'Investment & Portfolio Management',                     date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC302',  course_name: 'Intermediate Macroeconomics',                           date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPG054',  course_name: 'Operations Management',                                 date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR302',  course_name: 'Integrated Marketing Communication II',                 date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPR056',  course_name: 'Political Communication',                               date: '2026-06-05', start_time: '13:30', end_time: '17:00' },
+  // 7th June 2026 — Sunday
+  { course_code: 'BBEC306',  course_name: 'Trade Finance',                                         date: '2026-06-07', start_time: '08:30', end_time: '12:00' },
+  // 8th June 2026 — Monday
+  { course_code: 'BBBA302',  course_name: 'Management of Small and Medium Scale Enterprises',      date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS304',  course_name: 'Newspaper and Magazine Production',                     date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS206',  course_name: 'Public Speaking & Presentation',                        date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACT306',  course_name: 'Computerized Accounting Information Systems',           date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BATL204',  course_name: 'Ethics & Sustainability',                               date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF306',  course_name: 'Regulatory and Legal Framework for Financial Institutions', date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR208',  course_name: 'History of Mass Media in Africa',                       date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BATL302',  course_name: 'Warehouse Management',                                  date: '2026-06-08', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR304',  course_name: 'Public Relations Research',                             date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC312',  course_name: 'Financial Systems',                                     date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF202',  course_name: 'Investment Fundamentals',                               date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBEC304',  course_name: 'Development Economics',                                 date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF412',  course_name: 'Business Analysis & Financial Policy',                  date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPK056',  course_name: 'International Marketing',                               date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR206',  course_name: 'Communication Theories',                                date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPA052',  course_name: 'Management Accounting',                                 date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF408',  course_name: 'Contemporary Issues in Real Estate Development',        date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF314',  course_name: 'Financial Reporting (Non Accounting Students)',         date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BSIT302',  course_name: 'Business Systems Analysis and Design',                  date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC404',  course_name: 'Actuarial Professional Practice',                       date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPT062',  course_name: 'Computer and Information Security',                     date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BMKT304',  course_name: 'Sales Management',                                      date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPL052',  course_name: 'Company and Partnership Law',                           date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF412',  course_name: 'Procurement & Contract Management',                     date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR206B', course_name: 'Communication Theories',                                date: '2026-06-08', start_time: '13:30', end_time: '17:00' },
+  // 9th June 2026 — Tuesday
+  { course_code: 'BCPC212',  course_name: 'Business Ethics',                                       date: '2026-06-09', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BCPC304',  course_name: 'Business Ethics',                                       date: '2026-06-09', start_time: '13:30', end_time: '17:00' },
+  // 10th June 2026 — Wednesday
+  { course_code: 'BITM404',  course_name: 'Information Management',                                date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA308',  course_name: 'Human Resources Management',                            date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA406',  course_name: 'Supply Chain Management',                               date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACT406',  course_name: 'Public Sector Accounting & Finance',                    date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BRMF302',  course_name: 'Real Estate Law',                                       date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF414',  course_name: 'Project Finance',                                       date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS308',  course_name: 'Advertising Copyright',                                 date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACT404',  course_name: 'Financial Management',                                  date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC402',  course_name: 'Pension Fund Management',                               date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BATL306',  course_name: 'Transportation Economics',                              date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC318',  course_name: 'Actuarial Risk Management I',                           date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF418',  course_name: 'Advanced Corporate Finance & Investment',               date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'DIPK054',  course_name: 'Digital Marketing',                                     date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC408',  course_name: 'Health Insurance',                                      date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA412',  course_name: 'E-Commerce',                                            date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'DIPT056',  course_name: 'IT Service Management',                                 date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBEC404',  course_name: 'Game Theory & Business Applications',                   date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BSIT204',  course_name: 'Database Management System I',                          date: '2026-06-10', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBEC408',  course_name: 'Labour Economics',                                      date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BACT304',  course_name: 'Financial Reporting II',                                date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPC052',  course_name: 'Introduction to Business Finance',                      date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF406',  course_name: 'Real Estate Finance & Investment II',                   date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BAAF402',  course_name: 'International Trade Finance',                           date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPT058',  course_name: 'Introduction to Management Information Systems',        date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPA058',  course_name: 'Public Sector Accounting',                              date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR312',  course_name: 'Issues and Crises Management',                          date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPK064',  course_name: 'Principles of Advertising',                             date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPG056',  course_name: 'Introduction to Public Administration',                 date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR404',  course_name: 'Speech Writing',                                        date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR402',  course_name: 'Public Relations Strategy & Campaign Planning',         date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BMKT404B', course_name: 'Retail Management',                                     date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'DIPK062',  course_name: 'Integrated Marketing Communication',                    date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BRMF404',  course_name: 'Principles of Valuation II',                            date: '2026-06-10', start_time: '13:30', end_time: '17:00' },
+  // 11th June 2026 — Thursday
+  { course_code: 'BITM302',  course_name: 'Management Information Systems',                        date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC212',  course_name: 'Actuarial Statistics',                                  date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BMKT306',  course_name: 'Services Marketing',                                    date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF302',  course_name: 'Corporate Finance II',                                  date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BRMF306',  course_name: 'Introduction to Bills of Quantities',                   date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS306',  course_name: 'Broadcast Production',                                  date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBEC204',  course_name: 'Economy of Ghana',                                      date: '2026-06-11', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS312',  course_name: 'Creative Strategy and Execution',                       date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BSIT304',  course_name: 'Strategic Information Systems',                         date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC314',  course_name: 'Financial Reporting for Actuaries',                     date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BACT308',  course_name: 'Audit and Internal Review',                             date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF318',  course_name: 'Digital Banking and Fintech',                           date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF316',  course_name: 'Public Finance',                                        date: '2026-06-11', start_time: '13:30', end_time: '17:00' },
+  // 12th June 2026 — Friday
+  { course_code: 'BCPC208',  course_name: 'Quantitative Methods',                                  date: '2026-06-12', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA304',  course_name: 'Operations Management',                                 date: '2026-06-12', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'PBPR306',  course_name: 'Public Relations in Higher Education',                  date: '2026-06-12', start_time: '08:30', end_time: '12:00' },
+  // 13th June 2026 — Saturday
+  { course_code: 'BRMF412B', course_name: 'Procurement & Contract Management',                     date: '2026-06-13', start_time: '09:30', end_time: '13:00' },
+  { course_code: 'BBEC406',  course_name: 'Financial Economics',                                   date: '2026-06-13', start_time: '09:30', end_time: '13:00' },
+  // 14th June 2026 — Sunday
+  { course_code: 'BBAF202B', course_name: 'Investment Fundamentals',                               date: '2026-06-14', start_time: '09:30', end_time: '13:00' },
+  // 15th June 2026 — Monday
+  { course_code: 'BITM404B', course_name: 'Information Management',                                date: '2026-06-15', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBEC408B', course_name: 'Labour Economics',                                      date: '2026-06-15', start_time: '13:30', end_time: '17:00' },
+  // 16th June 2026 — Tuesday
+  { course_code: 'BACS312B', course_name: 'Creative Strategy and Execution',                       date: '2026-06-16', start_time: '13:30', end_time: '17:00' },
+  // 17th June 2026 — Wednesday
+  { course_code: 'BBBA406B', course_name: 'Supply Chain Management',                               date: '2026-06-17', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'DIPC052B', course_name: 'Introduction to Business Finance',                      date: '2026-06-17', start_time: '13:30', end_time: '17:00' },
+  // 18th June 2026 — Thursday
+  { course_code: 'BITM302B', course_name: 'Management Information Systems',                        date: '2026-06-18', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BCPC208B', course_name: 'Quantitative Methods',                                  date: '2026-06-18', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBBA304B', course_name: 'Operations Management',                                 date: '2026-06-18', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'PBPR306B', course_name: 'Public Relations in Higher Education',                  date: '2026-06-18', start_time: '13:30', end_time: '17:00' },
+  // 19th June 2026 — Friday
+  { course_code: 'BBAF302B', course_name: 'Corporate Finance II',                                  date: '2026-06-19', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACT308B', course_name: 'Audit and Internal Review',                             date: '2026-06-19', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBAF318B', course_name: 'Digital Banking and Fintech',                           date: '2026-06-19', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF316B', course_name: 'Public Finance',                                        date: '2026-06-19', start_time: '13:30', end_time: '17:00' },
+  // 20th June 2026 — Saturday (final day)
+  { course_code: 'BBBA304C', course_name: 'Operations Management',                                 date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BASC212B', course_name: 'Actuarial Statistics',                                  date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BMKT306B', course_name: 'Services Marketing',                                    date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BRMF306B', course_name: 'Introduction to Bills of Quantities',                   date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BACS306B', course_name: 'Broadcast Production',                                  date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BBEC204B', course_name: 'Economy of Ghana',                                      date: '2026-06-20', start_time: '08:30', end_time: '12:00' },
+  { course_code: 'BSIT304B', course_name: 'Strategic Information Systems',                         date: '2026-06-20', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BASC314B', course_name: 'Financial Reporting for Actuaries',                     date: '2026-06-20', start_time: '13:30', end_time: '17:00' },
+  { course_code: 'BBAF316C', course_name: 'Public Finance',                                        date: '2026-06-20', start_time: '13:30', end_time: '17:00' },
+];
+
+async function seed() {
+  console.log(`🎓 Seeding ${EXAMS.length} exams to Firestore...`);
+  const batch = db.batch();
+
+  for (const exam of EXAMS) {
+    const { programme, level } = parseCourseCode(exam.course_code);
+    const [year, month, day]   = exam.date.split('-').map(Number);
+    const [startH, startM]     = exam.start_time.split(':').map(Number);
+    const examDatetime          = new Date(year, month - 1, day, startH, startM, 0);
+    const docId                 = `${exam.date}_${exam.course_code.replace(/\//g, '-')}`;
+    const ref                   = db.collection('exams').doc(docId);
+
+    batch.set(ref, {
+      course_code:    exam.course_code,
+      course_name:    exam.course_name,
+      date:           exam.date,
+      start_time:     exam.start_time,
+      end_time:       exam.end_time,
+      programme,
+      level,
+      exam_datetime:  admin.firestore.Timestamp.fromDate(examDatetime),
+      academic_year:  '2025/2026',
+      semester:       2,
+      is_active:      true,
+      created_at:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  console.log(`✅ Done — ${EXAMS.length} exams seeded`);
+  console.log(`📅 Period: 1 June 2026 — 20 June 2026`);
+}
+
+seed().catch(err => {
+  console.error('❌ Failed:', err.message);
+  process.exit(1);
+});

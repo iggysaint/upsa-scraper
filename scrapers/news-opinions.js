@@ -4,18 +4,28 @@ import admin from 'firebase-admin';
 import { readFileSync } from 'fs';
 
 // ── Firebase setup ────────────────────────────────────────────────────────────
-const serviceAccount = JSON.parse(readFileSync('./serviceAccountKey.json', 'utf8'));
+const serviceAccount = JSON.parse(
+  readFileSync('./serviceAccountKey.json', 'utf8')
+);
 
 if (!admin.apps.length) {
-  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 }
 
 const db = admin.firestore();
 
 // ── Sources ───────────────────────────────────────────────────────────────────
 const SOURCES = [
-  { url: 'https://upsa.edu.gh/news/',     category: 'news'     },
-  { url: 'https://upsa.edu.gh/opinions/', category: 'opinions' },
+  {
+    url: 'https://upsa.edu.gh/news/',
+    category: 'articles',
+  },
+  {
+    url: 'https://upsa.edu.gh/opinions/',
+    category: 'articles',
+  },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -23,106 +33,243 @@ function cleanText(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-// ── Fetch body + image from individual article page ───────────────────────────
+// ── Better featured image extraction ──────────────────────────────────────────
+function getBestImage($) {
+  // 1. Trust og:image first (UPSA usually sets correct featured image)
+  const ogImage =
+    $('meta[property="og:image"]').attr('content') ||
+    $('meta[property="og:image:url"]').attr('content');
+
+  if (ogImage && ogImage.startsWith('http')) {
+    return ogImage;
+  }
+
+  // 2. Twitter image fallback
+  const twitterImage =
+    $('meta[name="twitter:image"]').attr('content');
+
+  if (twitterImage && twitterImage.startsWith('http')) {
+    return twitterImage;
+  }
+
+  // 3. Strong featured image selectors
+  const strongSelectors = [
+    '.jeg_featured img',
+    '.featured-image img',
+    '.post-thumbnail img',
+    '.wp-post-image',
+    'article img.wp-post-image',
+    '.jeg_thumb img',
+    '.single-featured-image img',
+  ];
+
+  for (const selector of strongSelectors) {
+    const img = $(selector).first();
+
+    if (img.length) {
+      const src =
+        img.attr('src') ||
+        img.attr('data-src') ||
+        img.attr('data-lazy-src') ||
+        '';
+
+      if (
+        src &&
+        src.startsWith('http') &&
+        !src.includes('logo') &&
+        !src.includes('avatar') &&
+        !src.includes('icon')
+      ) {
+        return src;
+      }
+    }
+  }
+
+  // 4. Smart fallback: choose largest real content image
+  const imageCandidates = [];
+
+  $('article img, .entry-content img, .jeg_post_content img')
+    .each((_, el) => {
+      const src =
+        $(el).attr('src') ||
+        $(el).attr('data-src') ||
+        $(el).attr('data-lazy-src') ||
+        '';
+
+      if (!src || !src.startsWith('http')) return;
+
+      if (
+        src.includes('logo') ||
+        src.includes('avatar') ||
+        src.includes('icon') ||
+        src.includes('cropped') ||
+        src.includes('placeholder') ||
+        src.includes('gravatar')
+      ) {
+        return;
+      }
+
+      const width = parseInt(
+        $(el).attr('width') || '0',
+        10
+      );
+
+      const height = parseInt(
+        $(el).attr('height') || '0',
+        10
+      );
+
+      const score = width * height;
+
+      imageCandidates.push({
+        src,
+        score,
+      });
+    });
+
+  if (imageCandidates.length) {
+    imageCandidates.sort((a, b) => b.score - a.score);
+    return imageCandidates[0].src;
+  }
+
+  return '';
+}
+
+// ── Fetch page details ────────────────────────────────────────────────────────
 async function fetchPageDetails(url) {
   try {
-    const { data } = await axios.get(url, { timeout: 10000 });
+    const { data } = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+    });
+
     const $ = cheerio.load(data);
 
-    // ── Image — og:image is always the correct featured image on UPSA pages ──
-    let image_url = $('meta[property="og:image"]').attr('content') || '';
+    const image_url = getBestImage($);
 
-    // Fallback — twitter:image
-    if (!image_url) {
-      image_url = $('meta[name="twitter:image"]').attr('content') || '';
-    }
-
-    // Fallback — WordPress featured image classes
-    if (!image_url) {
-      const featuredImg = $('.jeg_featured img, .post-thumbnail img, .wp-post-image').first();
-      if (featuredImg.length) {
-        image_url = featuredImg.attr('src') || featuredImg.attr('data-src') || '';
-      }
-    }
-
-    // Last resort — first wp-content/uploads image that isn't a logo/icon
-    if (!image_url) {
-      $('img').each((i, el) => {
-        const src = $(el).attr('src') || $(el).attr('data-src') || '';
-        if (
-          src &&
-          src.includes('/wp-content/uploads/') &&
-          !src.includes('logo') &&
-          !src.includes('avatar') &&
-          !src.includes('icon') &&
-          !src.includes('cropped') &&
-          src.startsWith('http')
-        ) {
-          image_url = src;
-          return false; // break
-        }
-      });
-    }
-
-    // ── Body text ─────────────────────────────────────────────────────────────
-    $('nav, header, footer, script, style, .jeg_header, .jeg_footer, .jeg_navigation').remove();
+    // Remove junk before body extraction
+    $(
+      'nav, header, footer, script, style, .jeg_header, .jeg_footer, .jeg_navigation, .sharedaddy, .sidebar'
+    ).remove();
 
     let body = '';
-    const selectors = ['.entry-content', '.jeg_post_content', '.post-content', 'article .content', '.single-content'];
-    for (const sel of selectors) {
-      const el = $(sel).first();
+
+    const selectors = [
+      '.entry-content',
+      '.jeg_post_content',
+      '.post-content',
+      'article .content',
+      '.single-content',
+      'article',
+    ];
+
+    for (const selector of selectors) {
+      const el = $(selector).first();
+
       if (el.length) {
         body = cleanText(el.text());
-        if (body.length > 50) break;
+
+        if (body.length > 80) {
+          break;
+        }
       }
     }
 
-    if (!body || body.length < 50) {
+    // Paragraph fallback
+    if (!body || body.length < 80) {
       const paragraphs = [];
-      $('article p, .post p').each((i, el) => {
-        const txt = cleanText($(el).text());
-        if (txt.length > 20) paragraphs.push(txt);
-      });
+
+      $('article p, .post p, .entry-content p')
+        .each((_, el) => {
+          const txt = cleanText($(el).text());
+
+          if (txt.length > 20) {
+            paragraphs.push(txt);
+          }
+        });
+
       body = paragraphs.join(' ');
     }
 
-    if (body.length > 800) body = body.slice(0, 800) + '…';
+    if (body.length > 800) {
+      body = body.slice(0, 800) + '…';
+    }
 
-    return { body, image_url };
-  } catch {
-    return { body: '', image_url: '' };
+    return {
+      body,
+      image_url,
+    };
+  } catch (err) {
+    console.log(
+      `❌ Failed to fetch page details: ${url}`
+    );
+
+    return {
+      body: '',
+      image_url: '',
+    };
   }
 }
 
 // ── Scrape a single source page ───────────────────────────────────────────────
 async function scrapePage(source) {
-  console.log(`\n🔍 Fetching ${source.category} page: ${source.url}`);
-  const { data } = await axios.get(source.url, { timeout: 15000 });
+  console.log(
+    `🔍 Fetching ${source.category}: ${source.url}`
+  );
+
+  const { data } = await axios.get(source.url, {
+    timeout: 15000,
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    },
+  });
+
   const $ = cheerio.load(data);
 
   const items = [];
-  $('h3 a').each((i, el) => {
+
+  $('h3 a').each((_, el) => {
     const title = cleanText($(el).text());
-    const link  = $(el).attr('href') || '';
+    const link = $(el).attr('href') || '';
+
     if (!title || !link) return;
-    if (!link.startsWith('https://upsa.edu.gh')) return;
-    items.push({ title, link, category: source.category });
+    if (!link.startsWith('https://upsa.edu.gh'))
+      return;
+
+    items.push({
+      title,
+      link,
+      category: source.category,
+    });
   });
 
-  console.log(`   📋 Found ${items.length} item(s)`);
+  console.log(
+    `📋 Found ${items.length} item(s)`
+  );
+
   return items;
 }
 
 // ── Push to Firebase ──────────────────────────────────────────────────────────
 async function pushToFirebase() {
-  let totalAdded = 0, totalSkipped = 0, totalUpdated = 0;
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
 
   for (const source of SOURCES) {
-    let items;
+    let items = [];
+
     try {
       items = await scrapePage(source);
     } catch (err) {
-      console.error(`   ❌ Failed to scrape ${source.url}: ${err.message}`);
+      console.error(
+        `❌ Failed to scrape ${source.url}:`,
+        err.message
+      );
       continue;
     }
 
@@ -132,49 +279,84 @@ async function pushToFirebase() {
         .replace(/\/$/, '')
         .replace(/\//g, '-');
 
-      const ref      = db.collection('announcements').doc(slug);
+      const ref = db
+        .collection('announcements')
+        .doc(slug);
+
       const existing = await ref.get();
 
+      console.log(
+        `📄 Fetching: ${item.title.slice(
+          0,
+          60
+        )}...`
+      );
+
+      const { body, image_url } =
+        await fetchPageDetails(item.link);
+
+      const payload = {
+        title: item.title,
+        body,
+        image_url,
+        category: item.category,
+        target_audience: 'all',
+        source_url: item.link,
+        is_active: true,
+      };
+
       if (existing.exists) {
-        const existingData = existing.data();
-        if (!existingData.body || existingData.body.length < 10) {
-          console.log(`🔄 Updating body for: ${item.title.slice(0, 50)}...`);
-          const { body, image_url } = await fetchPageDetails(item.link);
-          await ref.update({ body, image_url });
-          totalUpdated++;
-        } else {
-          totalSkipped++;
-        }
-        continue;
+        await ref.update(payload);
+
+        updated++;
+
+        console.log(
+          `🔄 Updated: ${item.title.slice(
+            0,
+            60
+          )}`
+        );
+
+        console.log(
+          `   📷 ${image_url || 'none'}`
+        );
+      } else {
+        await ref.set({
+          ...payload,
+          created_at:
+            admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        added++;
+
+        console.log(
+          `✅ Added: ${item.title.slice(
+            0,
+            60
+          )}`
+        );
+
+        console.log(
+          `   📷 ${image_url || 'none'}`
+        );
       }
 
-      console.log(`📄 Fetching details for: ${item.title.slice(0, 50)}...`);
-      const { body, image_url } = await fetchPageDetails(item.link);
-
-      await ref.set({
-        title:           item.title,
-        body:            body,
-        image_url:       image_url,
-        category:        item.category,
-        target_audience: 'all',
-        source_url:      item.link,
-        is_active:       true,
-        created_at:      admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      totalAdded++;
-      console.log(`✅ Added [${item.category}]: ${item.title.slice(0, 60)}`);
-      console.log(`   📷 Image: ${image_url ? 'found' : 'none'}`);
-      console.log(`   📝 Body: ${body ? body.slice(0, 60) + '...' : 'empty'}`);
-
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise((r) =>
+        setTimeout(r, 500)
+      );
     }
   }
 
-  console.log(`\n🎉 Done — ${totalAdded} added, ${totalUpdated} updated, ${totalSkipped} already complete`);
+  console.log(
+    `\n🎉 Done — ${added} added, ${updated} updated, ${skipped} skipped`
+  );
 }
 
-pushToFirebase().catch(err => {
-  console.error('❌ News/opinions scraper failed:', err.message);
+pushToFirebase().catch((err) => {
+  console.error(
+    '❌ News/opinions scraper failed:',
+    err.message
+  );
+
   process.exit(1);
 });

@@ -1,5 +1,4 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
+import puppeteer from 'puppeteer';
 import admin from 'firebase-admin';
 import { readFileSync } from 'fs';
 
@@ -10,55 +9,30 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 const EVENTS_URL = 'https://upsa.edu.gh/events/';
+const PAST_LIMIT  = 10; // max expired events to keep
 
 const MONTH_MAP = {
   Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
   Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12',
 };
 
-// ── Date window ───────────────────────────────────────────────────────────────
-// Keep events from 30 days ago up to 30 days ahead
-const today = new Date();
-today.setHours(0, 0, 0, 0);
-
-const PAST_CUTOFF = new Date(today);
-PAST_CUTOFF.setDate(PAST_CUTOFF.getDate() - 30);
-
-const FUTURE_CUTOFF = new Date(today);
-FUTURE_CUTOFF.setDate(FUTURE_CUTOFF.getDate() + 30);
-
-function isWithinWindow(dateStr) {
-  if (!dateStr) return false;
-  const d = new Date(dateStr + 'T00:00:00');
-  return d >= PAST_CUTOFF && d <= FUTURE_CUTOFF;
-}
-
-function getStatus(dateStr) {
-  if (!dateStr) return 'upcoming';
-  const d = new Date(dateStr + 'T00:00:00');
-  const todayMidnight = new Date();
-  todayMidnight.setHours(0, 0, 0, 0);
-  if (d < todayMidnight) return 'past';
-  if (d.toDateString() === todayMidnight.toDateString()) return 'today';
-  return 'upcoming';
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function cleanText(text) {
   return (text || '').replace(/\s+/g, ' ').trim();
 }
 
-function buildDate(dayText, monthText, yearHint) {
-  const day = (dayText || '').trim().padStart(2, '0');
-  const month = MONTH_MAP[(monthText || '').trim().slice(0, 3)];
-  if (!day || !month) return '';
-  // Use the year from the page if found, otherwise current year
-  const year = yearHint || new Date().getFullYear();
-  return `${year}-${month}-${day}`;
+function buildDate(day, month, year) {
+  const d = String(day).padStart(2, '0');
+  const m = MONTH_MAP[String(month).trim().slice(0, 3)];
+  if (!d || !m) return '';
+  const y = year || new Date().getFullYear();
+  return `${y}-${m}-${d}`;
 }
 
 function parseTimeRange(raw) {
   if (!raw) return { start_time: '', end_time: '' };
-  const match = raw.trim().match(/(\d{1,2}:\d{2}\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
+  const match = raw.match(/(\d{1,2}:\d{2}\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
   if (!match) return { start_time: '', end_time: '' };
   const to24 = (t) => {
     const m = t.trim().match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
@@ -75,193 +49,233 @@ function parseTimeRange(raw) {
 
 function detectCategory(title = '', description = '') {
   const text = (title + ' ' + description).toLowerCase();
-  if (text.includes('workshop') || text.includes('training')) return 'Workshop';
-  if (text.includes('seminar') || text.includes('webinar') || text.includes('lecture') || text.includes('dialogue')) return 'Seminar';
-  if (text.includes('career') || text.includes('fair') || text.includes('recruitment')) return 'Career Fair';
-  if (text.includes('hackathon') || text.includes('innovation') || text.includes('startup')) return 'Hackathon';
-  if (text.includes('conference') || text.includes('symposium') || text.includes('forum') || text.includes('roundtable')) return 'Conference';
-  if (text.includes('sport') || text.includes('game') || text.includes('health walk') || text.includes('astro')) return 'Sports';
-  if (text.includes('cultural') || text.includes('concert') || text.includes('carol') || text.includes('drama') || text.includes('thanksgiving')) return 'Cultural';
-  if (text.includes('social') || text.includes('party') || text.includes('dinner') || text.includes('homecoming') || text.includes('reception')) return 'Social';
-  if (text.includes('congregation') || text.includes('graduation') || text.includes('matriculation') || text.includes('orientation') || text.includes('research') || text.includes('launch')) return 'Academic';
+  if (text.includes('workshop') || text.includes('training'))                                          return 'Workshop';
+  if (text.includes('seminar') || text.includes('webinar') || text.includes('lecture'))                return 'Seminar';
+  if (text.includes('career') || text.includes('fair') || text.includes('recruitment'))               return 'Career Fair';
+  if (text.includes('hackathon') || text.includes('innovation') || text.includes('startup'))          return 'Hackathon';
+  if (text.includes('conference') || text.includes('symposium') || text.includes('forum'))            return 'Conference';
+  if (text.includes('sport') || text.includes('game') || text.includes('health walk'))                return 'Sports';
+  if (text.includes('cultural') || text.includes('concert') || text.includes('carol'))                return 'Cultural';
+  if (text.includes('social') || text.includes('party') || text.includes('dinner'))                   return 'Social';
+  if (text.includes('graduation') || text.includes('matriculation') || text.includes('orientation'))  return 'Academic';
   return 'Other';
 }
 
+function slugFromUrl(url) {
+  return url
+    .replace('https://upsa.edu.gh/', '')
+    .replace(/\/$/, '')
+    .replace(/\//g, '-');
+}
+
+// ── Scrape a single tab using Puppeteer ───────────────────────────────────────
+// Returns array of { title, link, date, start_time, end_time, image_url, status }
+
+async function scrapeTab(page, status) {
+  // Wait for events to render
+  await page.waitForSelector('h5 a, .event-title a, article h2 a', { timeout: 8000 }).catch(() => {});
+  await new Promise(r => setTimeout(r, 1500));
+
+  const events = await page.evaluate((statusLabel) => {
+    const results = [];
+    const MONTH_MAP = {
+      jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
+      jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12',
+    };
+
+    // Find all event links — UPSA uses h5 > a pattern
+    const links = Array.from(document.querySelectorAll('h5 a[href*="upsa.edu.gh/events/"]'));
+
+    links.forEach(el => {
+      const title = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const link  = el.href || '';
+      if (!title || !link || link === 'https://upsa.edu.gh/events/') return;
+
+      // Walk up to find the containing block
+      let block = el.parentElement;
+      for (let i = 0; i < 6; i++) {
+        if (!block) break;
+        if (['DIV','LI','ARTICLE','SECTION'].includes(block.tagName)) break;
+        block = block.parentElement;
+      }
+      const blockText = block ? (block.innerText || '').replace(/\s+/g, ' ').trim() : '';
+
+      // Date: "17 Aug" or "17 Aug 2026"
+      const dateMatch = blockText.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s+(\d{4}))?/i);
+      let date = '';
+      if (dateMatch) {
+        const d = String(dateMatch[1]).padStart(2, '0');
+        const m = MONTH_MAP[dateMatch[2].toLowerCase().slice(0,3)];
+        const y = dateMatch[3] || new Date().getFullYear();
+        if (d && m) date = `${y}-${m}-${d}`;
+      }
+
+      // Time
+      const timeMatch = blockText.match(/(\d{1,2}:\d{2}\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
+      const timeStr = timeMatch ? timeMatch[0] : '';
+
+      // Image
+      const img = block ? block.querySelector('img') : null;
+      const imgSrc = img ? (img.src || img.dataset.src || '') : '';
+      const image_url = imgSrc && imgSrc.startsWith('http') && !imgSrc.includes('logo') ? imgSrc : '';
+
+      results.push({ title, link, date, timeStr, image_url, status: statusLabel });
+    });
+
+    return results;
+  }, status);
+
+  // Parse time ranges
+  return events.map(e => {
+    const { start_time, end_time } = parseTimeRange(e.timeStr);
+    return { ...e, start_time, end_time };
+  });
+}
+
+// ── Click a tab by its visible text ──────────────────────────────────────────
+async function clickTab(page, tabText) {
+  await page.evaluate((text) => {
+    const tabs = Array.from(document.querySelectorAll('a, button, li, span'));
+    const tab = tabs.find(el => (el.textContent || '').trim().toLowerCase() === text.toLowerCase());
+    if (tab) tab.click();
+  }, tabText);
+  await new Promise(r => setTimeout(r, 2000));
+}
+
+// ── Fetch description from detail page ───────────────────────────────────────
+async function fetchDescription(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 });
+    await new Promise(r => setTimeout(r, 1000));
+    const desc = await page.evaluate(() => {
+      for (const sel of ['.entry-content', '.jeg_post_content', '.post-content', 'article']) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          if (text.length > 30) return text;
+        }
+      }
+      return '';
+    });
+    return desc.length > 600 ? desc.slice(0, 600) + '...' : desc;
+  } catch {
+    return '';
+  }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 async function pushToFirebase() {
-  console.log('Fetching UPSA events page...');
-  const { data } = await axios.get(EVENTS_URL, { timeout: 15000 });
-  const $ = cheerio.load(data);
-
-  const allEvents = [];
-
-  $('h5 a[href*="upsa.edu.gh/events/"]').each((_, el) => {
-    const titleEl = $(el);
-    const title = cleanText(titleEl.text());
-    const link = titleEl.attr('href') || '';
-    if (!title || !link) return;
-
-    const parent = titleEl.closest('div, li, article, section, p').first();
-    const blockText = cleanText(parent.text());
-
-    // Extract day, month, optional year from block text
-    const dateMatch = blockText.match(/^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s+(\d{4}))?/i);
-    let dateStr = '';
-    if (dateMatch) {
-      dateStr = buildDate(dateMatch[1], dateMatch[2], dateMatch[3]);
-    }
-
-    // ── WINDOW FILTER: skip if outside 30-day past / 30-day future window ──
-    if (dateStr && !isWithinWindow(dateStr)) return;
-
-    const timeMatch = blockText.match(/(\d{1,2}:\d{2}\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
-    const { start_time, end_time } = parseTimeRange(timeMatch ? timeMatch[0] : '');
-
-    let venue = '';
-    const venueMatch = blockText.match(/(?:am|pm)\s*[-–]\s*\d{1,2}:\d{2}\s*(?:am|pm)?\s*(.+?)(?:\n|The |This |[A-Z]{2})/);
-    if (venueMatch) venue = cleanText(venueMatch[1]).slice(0, 100);
-
-    const imgSrc = parent.find('img').first().attr('src') || parent.find('img').first().attr('data-src') || '';
-    const image_url = imgSrc && imgSrc.startsWith('http') && !imgSrc.includes('logo') && !imgSrc.includes('cropped') ? imgSrc : '';
-
-    const status = getStatus(dateStr);
-
-    allEvents.push({ title, link, dateStr, start_time, end_time, venue, image_url, status });
+  console.log('Launching browser...');
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
-  console.log(`Found ${allEvents.length} events within the 30-day window`);
+  const page = await browser.newPage();
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
+
+  console.log('Loading UPSA events page...');
+  await page.goto(EVENTS_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+  await new Promise(r => setTimeout(r, 2000));
+
+  // ── Scrape Upcoming tab (already active by default) ──
+  console.log('\n[1/3] Scraping Upcoming tab...');
+  const upcomingEvents = await scrapeTab(page, 'upcoming');
+  console.log(`  Found ${upcomingEvents.length} upcoming events`);
+
+  // ── Click Happening tab ──
+  console.log('\n[2/3] Scraping Happening tab...');
+  await clickTab(page, 'Happening');
+  const happeningEvents = await scrapeTab(page, 'today');
+  console.log(`  Found ${happeningEvents.length} happening today`);
+
+  // ── Click Expired tab ──
+  console.log('\n[3/3] Scraping Expired tab (last 10 only)...');
+  await clickTab(page, 'Expired');
+  const allExpired = await scrapeTab(page, 'past');
+  // Take only the last 10 expired (most recent past events appear first or last depending on site)
+  const expiredEvents = allExpired.slice(0, PAST_LIMIT);
+  console.log(`  Found ${allExpired.length} expired, keeping ${expiredEvents.length}`);
+
+  const allEvents = [...happeningEvents, ...upcomingEvents, ...expiredEvents];
+  console.log(`\nTotal to process: ${allEvents.length} events`);
 
   if (!allEvents.length) {
-    console.log('No events in window — check UPSA site or selectors');
+    console.log('No events found — check selectors or site structure');
+    await browser.close();
     return;
   }
 
-  // Log breakdown
-  const upcoming = allEvents.filter(e => e.status === 'upcoming').length;
-  const todayEvts = allEvents.filter(e => e.status === 'today').length;
-  const past = allEvents.filter(e => e.status === 'past').length;
-  console.log(`  Upcoming: ${upcoming} | Today: ${todayEvts} | Past (last 30d): ${past}`);
+  // Open a second page for detail fetches
+  const detailPage = await browser.newPage();
+  await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
 
   let added = 0; let skipped = 0; let updated = 0;
 
   for (const e of allEvents) {
-    const slug = e.link
-      .replace('https://upsa.edu.gh/', '')
-      .replace(/\/$/, '')
-      .replace(/\//g, '-');
-    const ref = db.collection('events').doc(slug);
+    const slug = slugFromUrl(e.link);
+    const ref  = db.collection('events').doc(slug);
     const existing = await ref.get();
 
     if (existing.exists) {
       const d = existing.data();
-      // Update status in case event moved from upcoming to past/today
       const needsStatusUpdate = d.status !== e.status;
-      const needsDescUpdate = !d.description || d.description.length < 10;
+      const needsDesc = !d.description || d.description.length < 10;
 
-      if (!needsStatusUpdate && !needsDescUpdate) {
-        skipped++;
-        continue;
-      }
+      if (!needsStatusUpdate && !needsDesc) { skipped++; continue; }
 
-      if (needsDescUpdate) {
-        try {
-          const { data: detailHtml } = await axios.get(e.link, { timeout: 10000 });
-          const $d = cheerio.load(detailHtml);
-          $d('nav, header, footer, script, style').remove();
-          let description = '';
-          for (const sel of ['.entry-content', '.jeg_post_content', '.post-content']) {
-            const el = $d(sel).first();
-            if (el.length) { description = cleanText(el.text()); if (description.length > 30) break; }
-          }
-          if (description.length > 600) description = description.slice(0, 600) + '...';
-          await ref.update({
-            description,
-            status: e.status,
-            image_url: e.image_url || d.image_url,
-          });
-        } catch {
-          if (needsStatusUpdate) await ref.update({ status: e.status });
-        }
+      if (needsDesc) {
+        console.log(`  Updating desc: ${e.title.slice(0, 50)}...`);
+        const description = await fetchDescription(detailPage, e.link);
+        await ref.update({ description, status: e.status, image_url: e.image_url || d.image_url });
+        await page.goto(EVENTS_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
       } else {
         await ref.update({ status: e.status });
       }
-
       updated++;
       continue;
     }
 
-    // New event — fetch description from detail page
-    console.log(`  Fetching detail: ${e.title.slice(0, 55)}...`);
-    let description = '';
-    let detailVenue = e.venue;
-
-    try {
-      const { data: detailHtml } = await axios.get(e.link, { timeout: 10000 });
-      const $d = cheerio.load(detailHtml);
-      $d('nav, header, footer, script, style').remove();
-
-      for (const sel of ['.entry-content', '.jeg_post_content', '.post-content']) {
-        const el = $d(sel).first();
-        if (el.length) { description = cleanText(el.text()); if (description.length > 30) break; }
-      }
-      if (!description) {
-        const paras = [];
-        $d('article p, .post p').each((_, el) => {
-          const txt = cleanText($d(el).text());
-          if (txt.length > 20) paras.push(txt);
-        });
-        description = paras.join(' ');
-      }
-      if (description.length > 600) description = description.slice(0, 600) + '...';
-
-      if (!detailVenue) {
-        const venueSel = $d('.tribe-venue, .tribe-address, [class*="venue"]').first().text();
-        if (venueSel) detailVenue = cleanText(venueSel).slice(0, 100);
-      }
-    } catch { /* silent */ }
-
-    const category = detectCategory(e.title, description);
+    // New event — fetch detail page
+    console.log(`  Fetching: ${e.title.slice(0, 55)}...`);
+    const description = await fetchDescription(detailPage, e.link);
+    const category    = detectCategory(e.title, description);
 
     await ref.set({
-      title: e.title,
+      title:       e.title,
       description,
-      image_url: e.image_url,
-      source_url: e.link,
-      date: e.dateStr,
-      start_time: e.start_time,
-      end_time: e.end_time,
-      venue: detailVenue,
+      image_url:   e.image_url,
+      source_url:  e.link,
+      date:        e.date,
+      start_time:  e.start_time,
+      end_time:    e.end_time,
+      venue:       '',
       category,
-      status: e.status,           // 'upcoming' | 'today' | 'past'
-      organiser: 'UPSA',
-      is_active: true,
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      status:      e.status,     // 'upcoming' | 'today' | 'past'
+      organiser:   'UPSA',
+      is_active:   true,
+      created_at:  admin.firestore.FieldValue.serverTimestamp(),
     });
 
     added++;
-    console.log(`  Added: ${e.title.slice(0, 50)} | ${e.dateStr} | ${e.status} | ${category}`);
-    await new Promise(r => setTimeout(r, 400));
+    console.log(`  Added: ${e.title.slice(0, 50)} | ${e.date} | ${e.status} | ${category}`);
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  console.log(`\nDone — ${added} added, ${updated} updated, ${skipped} skipped`);
-
-  // ── Clean up stale events outside the window from Firestore ──────────────
-  // Mark events older than 30 days as is_active: false so they stop showing
-  console.log('\nCleaning up stale events...');
-  const staleSnap = await db.collection('events')
-    .where('is_active', '==', true)
-    .get();
-
+  // ── Deactivate events no longer in any tab ────────────────────────────────
+  const currentSlugs = new Set(allEvents.map(e => slugFromUrl(e.link)));
+  const activeSnap   = await db.collection('events').where('is_active', '==', true).get();
   let deactivated = 0;
-  for (const doc of staleSnap.docs) {
-    const d = doc.data();
-    if (d.date && !isWithinWindow(d.date)) {
-      await doc.ref.update({ is_active: false, status: 'past' });
+  for (const doc of activeSnap.docs) {
+    if (!currentSlugs.has(doc.id)) {
+      await doc.ref.update({ is_active: false });
       deactivated++;
     }
   }
-  if (deactivated > 0) {
-    console.log(`Deactivated ${deactivated} stale events outside the window`);
-  }
+
+  await browser.close();
+
+  console.log(`\nDone — ${added} added, ${updated} updated, ${skipped} skipped, ${deactivated} deactivated`);
 }
 
 pushToFirebase().catch(err => {

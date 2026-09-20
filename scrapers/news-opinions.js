@@ -136,6 +136,16 @@ function getBestImage($) {
 }
 
 // ── Body extraction ───────────────────────────────────────────────────────────
+// An upsa.edu.gh article page is laid out like this:
+//   <h1>Title</h1> · date · paragraphs · "Author" (h2) · "More Stories" (h2) + other headlines
+// That "More Stories" block is what was leaking other articles' headlines into the body.
+// Note: the page's og:description is cut off after ~10 words, so it is only a last resort.
+
+const MAX_BODY_CHARS = 1800; // roughly 250-300 words
+const MIN_GOOD_WORDS = 100;
+
+const wordCount = (text) => text.split(/\s+/).filter(Boolean).length;
+
 // Things that are never part of the article text.
 const NOISE_SELECTORS = [
   'nav', 'header', 'footer', 'aside', 'script', 'style', 'noscript', 'form',
@@ -146,11 +156,10 @@ const NOISE_SELECTORS = [
   '.wp-caption-text', 'figcaption',
 ].join(', ');
 
-// "Related / latest news" style blocks. These are what was leaking other
-// articles' headlines into the body.
+// "Related / latest news" style blocks
 const LISTING_LIKE_SELECTORS = '[class*="related"], [class*="jeg_postblock"]';
 
-// Where the real post text lives
+// Where the real post text usually lives
 const CONTENT_SELECTORS =
   '.entry-content, .content-inner, .jeg_post_content, .post-content, .single-content';
 
@@ -167,23 +176,66 @@ const BODY_SELECTORS = [
 ];
 
 function stripNoise($) {
-  $(NOISE_SELECTORS).remove();
+  // Never remove something that wraps the article itself (its heading or content),
+  // and never the <html>/<body> tags, whatever classes they carry.
+  const isSafeToRemove = (el) =>
+    !$(el).is('html, body') &&
+    $(el).find(`${CONTENT_SELECTORS}, h1`).length === 0;
 
-  // Only drop related/latest blocks that do NOT wrap the real post content
+  $(NOISE_SELECTORS)
+    .filter((_, el) => isSafeToRemove(el))
+    .remove();
+
+  // Related / latest blocks
   $(LISTING_LIKE_SELECTORS)
-    .filter((_, el) => $(el).find(CONTENT_SELECTORS).length === 0)
+    .filter((_, el) => isSafeToRemove(el))
     .remove();
 }
 
-// Text of the <p> tags inside an element. Headlines in widgets are usually
-// h2/h3 links, not paragraphs, so this skips most listing junk on its own.
+// Text of the <p> tags inside an element
 function paragraphText($, el) {
   return $(el)
     .find('p')
     .map((_, p) => cleanText($(p).text()))
     .get()
-    .filter((txt) => txt.length > 20)
+    .filter((txt) => txt.length > 30)
     .join(' ');
+}
+
+// Everything between the article's <h1> and the next <h2> ("Author", "More Stories", ...).
+// Works whatever the theme calls its containers.
+function paragraphsAfterTitle($, ownTitle) {
+  const nodes = $('h1, h2, p').toArray();
+  const own = norm(ownTitle).slice(0, 30);
+
+  let start = nodes.findIndex(
+    (el) => el.name === 'h1' && norm($(el).text()).startsWith(own)
+  );
+  if (start === -1) start = nodes.findIndex((el) => el.name === 'h1');
+  if (start === -1) return '';
+
+  const parts = [];
+  let length = 0;
+
+  for (let i = start + 1; i < nodes.length; i++) {
+    const el = nodes[i];
+
+    if (el.name === 'h2') {
+      if (length > 200) break; // reached "Author" / "More Stories"
+      continue;
+    }
+
+    const text = cleanText($(el).text());
+
+    if (text.length > 30) {
+      parts.push(text);
+      length += text.length;
+    }
+
+    if (length > MAX_BODY_CHARS * 2) break;
+  }
+
+  return parts.join(' ');
 }
 
 // True if the text opens with the headline of a DIFFERENT article
@@ -199,6 +251,75 @@ function startsWithOtherTitle(text, ownTitle, allTitles) {
   });
 }
 
+// Cut long text at the end of a sentence (or at least a word) and add "…"
+function trimToLength(text) {
+  if (text.length <= MAX_BODY_CHARS) return text;
+
+  const cut = text.slice(0, MAX_BODY_CHARS);
+  const lastSentence = Math.max(
+    cut.lastIndexOf('. '),
+    cut.lastIndexOf('! '),
+    cut.lastIndexOf('? ')
+  );
+
+  if (lastSentence > MAX_BODY_CHARS * 0.6) {
+    return cut.slice(0, lastSentence + 1).trim() + ' …';
+  }
+
+  return cut.slice(0, cut.lastIndexOf(' ')).trim() + '…';
+}
+
+// Works out the article text from an already-loaded page
+function extractBody($, ownTitle, allTitles) {
+  // Read the meta description BEFORE stripping anything
+  const metaDescription = cleanText(
+    $('meta[property="og:description"]').attr('content') ||
+      $('meta[name="description"]').attr('content') ||
+      ''
+  );
+
+  stripNoise($);
+
+  const candidates = [];
+
+  // 1. Anchored on the article heading — doesn't depend on class names
+  candidates.push(paragraphsAfterTitle($, ownTitle));
+
+  // 2. Known content containers (keep the one with the most paragraph text)
+  for (const selector of BODY_SELECTORS) {
+    let best = '';
+
+    $(selector).each((_, el) => {
+      const text = paragraphText($, el);
+      if (text.length > best.length) best = text;
+    });
+
+    candidates.push(best);
+  }
+
+  // Drop empty candidates and any that open with another article's headline
+  const usable = candidates.filter(
+    (c) => c && !startsWithOtherTitle(c, ownTitle, allTitles)
+  );
+
+  // Prefer the first candidate with a decent amount of text, else the longest one
+  let body =
+    usable.find((c) => wordCount(c) >= MIN_GOOD_WORDS) ||
+    [...usable].sort((a, b) => b.length - a.length)[0] ||
+    '';
+
+  // Last resort: the page's own (short) summary
+  if (
+    !body &&
+    metaDescription.length > 40 &&
+    !startsWithOtherTitle(metaDescription, ownTitle, allTitles)
+  ) {
+    body = metaDescription;
+  }
+
+  return trimToLength(body);
+}
+
 // ── Fetch page details ────────────────────────────────────────────────────────
 async function fetchPageDetails(url, ownTitle, allTitles) {
   try {
@@ -209,45 +330,9 @@ async function fetchPageDetails(url, ownTitle, allTitles) {
 
     const $ = cheerio.load(data);
 
-    // Grab image + meta description BEFORE stripping anything
+    // Image first: extractBody strips parts of the page
     const image_url = getBestImage($);
-    const metaDescription = cleanText(
-      $('meta[property="og:description"]').attr('content') ||
-        $('meta[name="description"]').attr('content') ||
-        ''
-    );
-
-    stripNoise($);
-
-    let body = '';
-
-    for (const selector of BODY_SELECTORS) {
-      // Several elements can match: keep the one with the most paragraph text
-      let best = '';
-
-      $(selector).each((_, el) => {
-        const text = paragraphText($, el);
-        if (text.length > best.length) best = text;
-      });
-
-      if (best.length > 80 && !startsWithOtherTitle(best, ownTitle, allTitles)) {
-        body = best;
-        break;
-      }
-    }
-
-    // Fallback: the page's own summary, if it isn't another article's headline
-    if (
-      !body &&
-      metaDescription.length > 40 &&
-      !startsWithOtherTitle(metaDescription, ownTitle, allTitles)
-    ) {
-      body = metaDescription;
-    }
-
-    if (body.length > 800) {
-      body = body.slice(0, 800) + '…';
-    }
+    const body = extractBody($, ownTitle, allTitles);
 
     return { body, image_url };
   } catch (err) {
@@ -363,7 +448,7 @@ async function pushToFirebase() {
     }
 
     console.log(`   📷 ${image_url || 'none'}`);
-    console.log(`   📝 ${body ? body.slice(0, 90) : 'no body found'}`);
+    console.log(`   📝 ${wordCount(body)} words: ${body ? body.slice(0, 90) : 'no body found'}`);
 
     await new Promise((r) => setTimeout(r, 500));
   }

@@ -1,0 +1,36 @@
+name: Sync announcements, news and hostel notices
+
+on:
+  schedule:
+    - cron: '17 * * * *'  # every hour at :17 (UTC = Ghana time); off minute 0, which GitHub delays most
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: report what would change, write nothing'
+        type: boolean
+        default: false
+
+# Never two runs of the same job at once; a late run waits rather than overlapping.
+concurrency:
+  group: sync-posts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Sync posts to UNIFY
+        run: node src/cli.js posts ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          UNIFY_API_URL: ${{ vars.UNIFY_API_URL }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}

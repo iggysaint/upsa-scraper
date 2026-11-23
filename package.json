@@ -4,15 +4,18 @@
   "type": "module",
   "description": "Scrapes UPSA website for announcements, hostel notices, and fee deadlines. Sends push notification reminders via Expo.",
   "scripts": {
-    "scrape:announcements": "node scraper.js",
-    "scrape:hostel": "node scrapers/hostel-notices.js",
-    "scrape:fees": "node scrapers/fee-deadlines.js",
-    "notify:reminders": "node notifications/send-reminders.js"
+    "sync:posts": "node src/cli.js posts",
+    "sync:events": "node src/cli.js events",
+    "sync:fees": "node src/cli.js fees",
+    "dry-run:posts": "node src/cli.js posts --dry-run",
+    "dry-run:events": "node src/cli.js events --dry-run",
+    "dry-run:fees": "node src/cli.js fees --dry-run",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "cheerio": "^1.0.0",
-    "firebase-admin": "^13.9.0",
-    "puppeteer": "^25.7.0"
+    "cheerio": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

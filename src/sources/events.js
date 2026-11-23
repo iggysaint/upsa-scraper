@@ -55,10 +55,14 @@ export function parseDetail(html) {
   const address = lines(box('address'));
   const date = findDate(start.join(' '));
   if (!date) throw new Error('parse_failed: event page has no start date');
+  // UPSA marks all-day events as "12:00 am" to "12:00 am" (often ending the
+  // next day). That is not a real time, so the app shows no time at all.
+  const allDay = /^12:00\s*am$/i.test(start[0] ?? '') && /^12:00\s*am$/i.test(finish[0] ?? '');
   return {
     date,
-    startTime: start[0] ?? null,
-    endTime: finish[0] ?? null,
+    allDay,
+    startTime: allDay ? null : (start[0] ?? null),
+    endTime: allDay ? null : (finish[0] ?? null),
     venue: address[0] ?? null,
     description: htmlToText($('.summary .entry-content').first().html() ?? $('.entry-content').last().html() ?? ''),
   };
@@ -83,8 +87,9 @@ export async function fetchEvents({ today = new Date().toISOString().slice(0, 10
       title: card.title,
       description: detail.description,
       date: detail.date,
-      startTime: detail.startTime ?? card.startTime,
-      endTime: detail.endTime ?? card.endTime,
+      // The listing shows the same "12:00 am" placeholder, so don't fall back to it.
+      startTime: detail.allDay ? null : (detail.startTime ?? card.startTime),
+      endTime: detail.allDay ? null : (detail.endTime ?? card.endTime),
       venue: detail.venue ?? card.venue,
       imageUrl: card.imageUrl,
     });

@@ -82,6 +82,19 @@ describe('events page', () => {
     assert.match(d.description, /Matriculation Thanksgiving Service/);
   });
 
+  it('treats UPSA\'s "12:00 am to 12:00 am" placeholder as an all-day event with no time', () => {
+    const html = fixture('event-detail.html')
+      .replace('<p>6:30 am</p>', '<p>12:00 am</p>')
+      .replace('<p>10:00 am</p>', '<p>12:00 am</p>')
+      .replace(/(<p>12:00 am<\/p>\s*(?:<[^>]+>\s*)*?<p>)November 8, 2026(?![\s\S]*12:00 am)/, '$1November 9, 2026');
+    const d = parseDetail(html);
+    assert.equal(d.date, '2026-11-08'); // the start date, as on the event's own page
+    assert.equal(d.allDay, true);
+    assert.equal(d.startTime, null);
+    assert.equal(d.endTime, null);
+    assert.equal(parseDetail(fixture('event-detail.html')).allDay, false);
+  });
+
   it('reports an event page without a start date as broken', () => {
     assert.throws(() => parseDetail('<div class="summary"><p>No details</p></div>'), /parse_failed/);
   });
